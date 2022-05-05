@@ -226,6 +226,8 @@ growth_type_unw_adm0$typ_yr <- 'placeholder'
 growth_type_unw_adm0$typ_yr <- paste(growth_type_unw_adm0$typ, growth_type_unw_adm0$year, sep="_")
 
 WSFE_type_adm0_stats <- merge(growth_type_adm0, growth_type_unw_adm0, by="typ_yr")
+WSFE_type_adm0_stats = select(WSFE_type_adm0_stats, -c(year.y, typ.y))
+WSFE_type_adm0_stats = rename(WSFE_type_adm0_stats, c("year"="year.x", "typ"="typ.x"))
 
 write.csv(WSFE_type_adm0_stats, file = "BFA_growth_SettlementType_adm0.csv")
 
@@ -323,6 +325,8 @@ growth_type_unw_adm1$adm_typ_yr <- 'placeholder'
 growth_type_unw_adm1$adm_typ_yr <- paste(growth_type_unw_adm1$admin1Pcod, growth_type_unw_adm1$typ, growth_type_unw_adm1$year, sep="_")
 
 WSFE_type_adm1_stats <- merge(growth_type_w_adm1, growth_type_unw_adm1, by="adm_typ_yr")
+WSFE_type_adm1_stats = select(WSFE_type_adm1_stats, -c(year.y, typ.y, admin1Pcod.y))
+WSFE_type_adm1_stats = rename(WSFE_type_adm1_stats, c("year"="year.x", "typ"="typ.x", "admin1Pcod"="admin1Pcod.x"))
 
 write.csv(WSFE_type_adm1_stats, file = "BFA_growth_SettlementType_adm1.csv")
 
@@ -419,6 +423,8 @@ growth_type_unw_adm2$adm_typ_yr <- 'placeholder'
 growth_type_unw_adm2$adm_typ_yr <- paste(growth_type_unw_adm2$admin2Pcod, growth_type_unw_adm2$typ, growth_type_unw_adm2$year, sep="_")
 
 WSFE_type_adm2_stats <- merge(growth_type_w_adm2, growth_type_unw_adm2, by="adm_typ_yr")
+WSFE_type_adm2_stats = select(WSFE_type_adm2_stats, -c(year.y, typ.y, admin2Pcod.y))
+WSFE_type_adm2_stats = rename(WSFE_type_adm2_stats, c("year"="year.x", "typ"="typ.x", "admin2Pcod"="admin2Pcod.x"))
 
 write.csv(WSFE_type_adm2_stats, file = "BFA_growth_SettlementType_adm2.csv")
 
@@ -517,9 +523,77 @@ growth_type_unw_adm3$adm_typ_yr <- 'placeholder'
 growth_type_unw_adm3$adm_typ_yr <- paste(growth_type_unw_adm3$admin3Pcod, growth_type_unw_adm3$typ, growth_type_unw_adm3$year, sep="_")
 
 WSFE_type_adm3_stats <- merge(growth_type_w_adm3, growth_type_unw_adm3, by="adm_typ_yr")
+WSFE_type_adm3_stats = select(WSFE_type_adm3_stats, -c(year.y, typ.y, admin3Pcod.y))
+WSFE_type_adm3_stats = rename(WSFE_type_adm3_stats, c("year"="year.x", "typ"="typ.x", "admin3Pcod"="admin3Pcod.x"))
 
 write.csv(WSFE_type_adm3_stats, file = "BFA_growth_SettlementType_adm3.csv")
 
+
+
+# --- 9. Assigning WorldPop Top-down constrained population estimates 2020 ---
+pop_adm0 = sum(casestudies$pop, na.rm=T)
+
+pop_adm1 = 1
+pop_adm1 = casestudies %>% 
+  group_by(admin1Pcod) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
+  as.data.frame()
+
+pop_adm2 = 1
+pop_adm2 = casestudies %>% 
+  group_by(admin2Pcod) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
+  as.data.frame()
+
+pop_adm3 = 1
+pop_adm3 = casestudies %>% 
+  group_by(admin3Pcod) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
+  as.data.frame()
+
+pop_type_adm0 = 1
+pop_type_adm0 = casestudies %>% 
+  group_by(typ) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
+  as.data.frame()
+
+pop_type_adm1 = 1
+pop_type_adm1 = casestudies %>%
+  group_by(typ, admin1Pcod) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>%
+  as.data.frame()
+
+pop_type_adm2 = 1
+pop_type_adm2 = casestudies %>%
+  group_by(typ, admin2Pcod) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>%
+  as.data.frame()
+
+pop_type_adm3 = 1
+pop_type_adm3 = casestudies %>%
+  group_by(typ, admin3Pcod) %>%
+  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>%
+  as.data.frame()
+
+
+# Join onto aggregate tables and save to file.
+growth_unw_adm0$pop_adm0 = pop_adm0
+growth_unw_adm1 = merge(growth_unw_adm1, pop_adm1, by="admin1Pcod", all.x=T)
+growth_unw_adm2 = merge(growth_unw_adm2, pop_adm2, by="admin2Pcod", all.x=T)
+growth_unw_adm3 = merge(growth_unw_adm3, pop_adm3, by="admin3Pcod", all.x=T)
+WSFE_type_adm0_stats = merge(WSFE_type_adm0_stats, pop_type_adm0, by="typ", all.x=T)
+WSFE_type_adm1_stats = merge(WSFE_type_adm1_stats, pop_type_adm1, by=c("typ", "admin1Pcod"), all.x=T)
+WSFE_type_adm2_stats = merge(WSFE_type_adm2_stats, pop_type_adm2, by=c("typ", "admin2Pcod"), all.x=T)
+WSFE_type_adm3_stats = merge(WSFE_type_adm3_stats, pop_type_adm3, by=c("typ", "admin3Pcod"), all.x=T)
+
+write.csv(growth_unw_adm0, file = "BFA_growth_adm0.csv")
+write.csv(WSFE_type_adm0_stats, file = "BFA_growth_SettlementType_adm0.csv")
+write.csv(growth_unw_adm1, file = "BFA_growth_adm1.csv")
+write.csv(growth_unw_adm2, file = "BFA_growth_adm2.csv")
+write.csv(growth_unw_adm3, file = "BFA_growth_adm3.csv")
+write.csv(WSFE_type_adm1_stats, file = "BFA_growth_SettlementType_adm1.csv")
+write.csv(WSFE_type_adm2_stats, file = "BFA_growth_SettlementType_adm2.csv")
+write.csv(WSFE_type_adm3_stats, file = "BFA_growth_SettlementType_adm3.csv")
 
 
 
