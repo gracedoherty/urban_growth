@@ -4,7 +4,7 @@
 
 # ------------- PREPARE WORKSPACE -------------
 setwd("C:/Users/grace/GIS/povertyequity/urban_growth")
-wd <- getwd()
+wd = getwd()
 library(ursa)
 library(raster)
 library(sp)
@@ -17,6 +17,8 @@ library(zoo) # rollsum()
 library(tidyverse) # ggplot2()
 library(tidyr) # complete()
 library(viridis)
+library(ggnewscale) # The ggnewscale::new_scale_colour() command acts as an instruction to ggplot2 to initialise a new colour scale: scale and guide commands that appear above the new_scale_colour() command will be applied to the first colour scale, and commands that appear below are applied to the second colour scale.
+library(svglite) # ggsave()
 
 
 # ------------- LOAD DATA ----------------
@@ -25,98 +27,102 @@ library(viridis)
 # Yearly built up area extents from 1985 - 2015
 # Each year feature only contains the *additional* built up area from the year before, e.g. 1999 is *exclusive* of all 1998's existing area.
 # The extents of each city boundary are based on whichever GRID3 settlement extent boundary they intersect with or are nearest to.
-casestudies <-  st_read('WSFE_CAF_GRID3/WSFE_CAF_GRID3.shp')
+AllBuildup =  st_read('WSFE_growthstats_grid3_v2/WSFE_TCD_growthstats2.shp')
 
 # Clean up, if necessary
-#casestudies <- rename(casestudies, c("year"="gridcode"))
-#casestudies$year <- as.numeric(as.character(casestudies$year))
+#AllBuildup$year = as.numeric(as.character(AllBuildup$year))
+
+AllBuildup = select(AllBuildup, c(WSFE_ID, GRID3_ID, year, area_m, type, ADM1, pop2020, geometry))
+# AllBuildup = select(AllBuildup, c(TARGET_FID, NEAR_FID, year, area_m, type, ADM1_CODE, pop_un_adj, geometry))
+# AllBuildup = rename(AllBuildup, c("WSFE_ID"="TARGET_FID", "GRID3_ID"="NEAR_FID", "ADM1"="ADM1_CODE", "pop2020"="pop_un_adj"))
+
+# Accidentally dropped the pop value earlier
+# GRID3 = st_read("GRID3_albers/GRID3_TCD_albers.shp")
+# GRID3 = select(GRID3, c(OBJECTID, pop_un_adj))
+# GRID3 = GRID3 %>% st_drop_geometry()
+# GRID3 = rename(GRID3, c("pop2020"="pop_un_adj"))
+# AllBuildup = merge(AllBuildup, GRID3, by.x="GRID3_ID", by.y="OBJECTID", all.x=T)
 
 # Convert square meters to square kilometers (less unwieldy)
-casestudies$area_km <- 0
-casestudies <- casestudies %>% mutate(area_km = area_m / 1000000)
-
+AllBuildup$AreaKM = 0
+AllBuildup = AllBuildup %>% mutate(AreaKM = area_m / 1000000)
 
 
 # ------------- PREPARE DATASET ----------------
 
+# # --- Merge any settlement IDs that should be a single city (to align with common / political definition of the city's extent) ---
+# Bamako = AllBuildup %>%
+#               filter(GRID3_ID==97 | GRID3_ID == 98) %>%
+#               group_by(year) %>%
+#               mutate(area_m = sum(area_m))
+# Bamako = Bamako[Bamako$GRID3_ID == 97,]
+# 
+# # Making sure it worked by spot-checking that area_m column would add up to new merged value
+# AllBuildup_9798 = AllBuildup[AllBuildup$GRID3_ID == 97 | AllBuildup$GRID3_ID == 98,]
+# 
+# # Append
+# AllBuildup = AllBuildup[!AllBuildup$GRID3_ID == 97 & !AllBuildup$GRID3_ID == 98,]
+# AllBuildup = rbind(AllBuildup, Bamako)
+# 
+# rm(Bamako)
+
+
 # --- Add in rows for years where build-up was zero. ---
 # Alternatively, you could account for the missing years in each calculation below. This global prep seemed easier, though more memory intensive.
-casestudies <- complete(casestudies, year, NEAR_FID, fill=list(area_m=0, area_km=0))
+AllBuildup = complete(AllBuildup, year, GRID3_ID, fill=list(area_m=0, AreaKM=0))
 
 # --- Total square area of the city. ---
 # Creating a cumulative area field for 2015 for ease of calculation farther down.
 # Note: Shape area variable is now in SQUARE KILOMETERS, not meters.
-area_df <- aggregate(casestudies$area_km, list(casestudies$NEAR_FID), FUN=sum, na.rm=TRUE, na.action=NULL)
-area_df <- rename(area_df, c("NEAR_FID"="Group.1", "totArea"="x")) # Calling it "tot" for "total" instead of "2015" in case any WSF-E rasters aren't available for 2015.
-casestudies <- merge(x=casestudies, y=area_df, by='NEAR_FID', all.x=TRUE)
+area_df = aggregate(AllBuildup$AreaKM, list(AllBuildup$GRID3_ID), FUN=sum, na.rm=TRUE, na.action=NULL)
+area_df = rename(area_df, c("GRID3_ID"="Group.1", "TotArea"="x")) # Calling it "tot" for "total" instead of "2015" in case any WSF-E rasters aren't available for 2015.
+AllBuildup = merge(x=AllBuildup, y=area_df, by='GRID3_ID', all.x=TRUE)
+rm(area_df)
 
 # Create unique ID for each location & year combination.
-casestudies$built_ID <- 'string field placeholder'
-casestudies$built_ID <- paste(casestudies$NEAR_FID, casestudies$year, sep="_")
+AllBuildup$built_ID = paste(AllBuildup$GRID3_ID, AllBuildup$year, sep="_")
 
 # Arrange so that rows are grouped by location and sorted in ascending year order.
 # This simplifies the stats approach below, as we can call on the previous row without specifying groups.
 # There's a more eloquent way to do this, but I was struggling.
-casestudies <- arrange(casestudies, year)
-casestudies <- arrange(casestudies, NEAR_FID)
+AllBuildup = arrange(AllBuildup, year)
+AllBuildup = arrange(AllBuildup, GRID3_ID)
 
 
 
 # ------------- SUMMARY STATISTICS, GROWTH ----------------
 
-# --- Proportion of the city built in each year. (1985 should be treated as 'Before 1986') ---
-casestudies$prop1y <- 1
-casestudies$prop1y <- casestudies$area_km / casestudies$totArea * 100
+AllBuildup$Prop1y = AllBuildup$AreaKM / AllBuildup$TotArea # Proportion of the city built in each year. (1985 should be treated as 'Before 1986')
 
-# --- Total area of the city in the given year. ---
-casestudies$cuArea1y <- 1
-casestudies = casestudies %>% 
-  group_by(NEAR_FID) %>% 
-  mutate(cuArea1y = cumsum(area_km))
+AllBuildup = AllBuildup %>% 
+  group_by(GRID3_ID) %>% 
+  mutate(CuArea = cumsum(AreaKM)) # Total area of the city in the given year.
 
-# --- Proportion of the city built in the last 5 years. (1989 should be treated as 'Before 1990') ---
-# Also including a field for cumulative area from the last 5 years.
-casestudies$cuArea5y <- 1
-casestudies = casestudies %>% 
-  group_by(NEAR_FID) %>% 
-  mutate(cuArea5y = rollsumr(area_km, k = 5, fill = NA))
+AllBuildup = AllBuildup %>% 
+  group_by(GRID3_ID) %>% 
+  mutate(CuArea5y = rollsumr(AreaKM, k = 5, fill = NA)) # Cumulative area from the last 5 years.
 
-casestudies$prop5y <- 1
-casestudies$prop5y <- casestudies$cuArea5y / casestudies$totArea * 100
+AllBuildup$Prop5y = AllBuildup$CuArea5y / AllBuildup$TotArea # Proportion of the city built in the last 5 years. (1989 should be treated as 'Before 1990')
 
-
-# --- Percent increase in built area compared to previous year. ---
-casestudies$pcGRO_1y <- 1
-casestudies <- casestudies %>% 
-  arrange(NEAR_FID) %>% 
+AllBuildup = AllBuildup %>% 
+  arrange(GRID3_ID) %>% 
   mutate(diff_year = year - lag(year),
-         diff_area = cuArea1y - lag(cuArea1y),
-         pcGRO_1y = (diff_area / diff_year) / lag(cuArea1y) * 100)
+         diff_area = CuArea - lag(CuArea),
+         PcGro1y = (diff_area / diff_year) / lag(CuArea)) # Percent increase in built area compared to previous year.
 
-
-# --- Percent increase in built area compared to 5 years prior. ---
-casestudies$pcGRO_5y <- 1
-casestudies <- casestudies %>% 
-  arrange(NEAR_FID) %>% 
+AllBuildup = AllBuildup %>% 
+  arrange(GRID3_ID) %>% 
   mutate(diff_year = year - lag(year, 5),
-         diff_area = cuArea1y - lag(cuArea1y, 5),
-         pcGRO_5y = ifelse(diff_year==5, (cuArea1y - lag(cuArea1y, 5)) / lag(cuArea1y, 5) * 100, NA))
+         diff_area = CuArea - lag(CuArea, 5),
+         PcGro5y = ifelse(diff_year==5, (CuArea - lag(CuArea, 5)) / lag(CuArea, 5), NA)) # Percent increase in built area compared to 5 years prior.
 
-
-# --- Percent increase in built area compared to 10 years prior. ---
-casestudies$pcGRO_10y <- 1
-casestudies <- casestudies %>% 
-  arrange(NEAR_FID) %>% 
+AllBuildup = AllBuildup %>% 
+  arrange(GRID3_ID) %>% 
   mutate(diff_year = year - lag(year, 10),
-         diff_area = cuArea1y - lag(cuArea1y, 10),
-         pcGRO_10y = ifelse(diff_year==10, (cuArea1y - lag(cuArea1y, 10)) / lag(cuArea1y, 10) * 100, NA))
+         diff_area = CuArea - lag(CuArea, 10),
+         PcGro10y = ifelse(diff_year==10, (CuArea - lag(CuArea, 10)) / lag(CuArea, 10), NA)) # Percent increase in built area compared to 10 years prior.
 
-
-
-# ------------- SAVE TO FILE ----------------
-casestudies <- select(casestudies, -c(diff_year, diff_area)) # Remove temporary columns.
-
-st_write(casestudies, "WSFE_growthstats_grid3_v2/WSFE_CAF_growthstats2.shp", driver = "ESRI Shapefile", append=FALSE)
+AllBuildup = select(AllBuildup, -c(diff_year, diff_area)) # Remove temporary columns.
 
 
 
@@ -124,713 +130,458 @@ st_write(casestudies, "WSFE_growthstats_grid3_v2/WSFE_CAF_growthstats2.shp", dri
 
 # ------------- AGGREGATED TRENDS ----------------
 
-# Reload if necessary.
-casestudies <-  st_read('WSFE_growthstats_grid3_v2/WSFE_BFA_adm.shp')
-casestudies <- casestudies %>% st_drop_geometry()
-
 # Make a simpler settlement type variable for generating unique IDs later on.
-casestudies$typ = "placeholder"
-casestudies$typ = with(casestudies, ifelse(type == "Built-up Area", "bua",
-                                                     ifelse(type == "Small Settlement Area", "ssa", "ha")))
+table(AllBuildup$type)
+AllBuildup$type = with(AllBuildup, ifelse(type == "Built-up Area", "BUA",
+                                                     ifelse(type == "Small Settlement Area", "SSA", "HA")))
+
+# Create 3 city classes: 
+# 1) high density urban (metropoles) and 
+# 2,3) all other built-up areas split into 50% above and below their median pop size (high population cities; low population cities)
+# The Degree of Urbanization identifies three types of settlements:
+#   1)  Cities, which have a population of at least 50,000 inhabitants in contiguous dense grid cells (>1,500 inhabitants per km2);
+#   2)  Towns and semi-dense areas, which have a population of at least 5,000 inhabitants in contiguous grid cells with a density of at least 300 inhabitants per km2; and
+#   3)  Rural areas, which consist mostly of low-density grid cells (2).
+
+AllBuildup$PopDens2015 = AllBuildup$pop2020 / AllBuildup$TotArea
+# Reclass largest cities to high density (Degree of Urb. level 1)
+AllBuildup$POPtyp = with(AllBuildup, ifelse(pop2020>=50000 & PopDens2015 >=1500, "HDurban", # High density urban
+                                            ifelse(pop2020 >=5000 & PopDens2015 >= 300, "SDurban",  # Semi-dense urban
+                                                   ifelse(type=="BUA","LDbua", # Low density population, but buildings are dense according to GRID3
+                                                          type)))) # If none of those, then keep the SSA or HA classification.
+table(AllBuildup$POPtyp) # Chad has 6 high density urban areas (180 rows / 30 years)
+
+SD_avg = mean(AllBuildup$pop2020[AllBuildup$POPtyp=="SDurban"]) # Mean population size of all semi-dense cities in Chad = 11k
+SD_med = median(AllBuildup$pop2020[AllBuildup$POPtyp=="SDurban"]) # Median population = 8207
+
+AllBuildup$POPtyp = with(AllBuildup, ifelse(pop2020>=SD_med & POPtyp=="SDurban", "SDtop50", 
+                                            ifelse(pop2020<SD_med & POPtyp=="SDurban", "SDbot50", POPtyp)))
+table(AllBuildup$POPtyp) # The new SD rows should be split evenly. (50% each of original SDurban results).
 
 
-# --- 1. Total country annual growth rate and proportion of build-up. ---
+country_iso = "TCD"
+savename = paste(country_iso, "growthstats_AllSettlements", sep="_")
+st_write(AllBuildup, dsn = file.path(getwd(), 'UrbanGrowth.gpkg'), layer = savename, append=F)
 
-# Average growth rate per year, weighted by settlement. (every BUA, SSA, and HA has an equal weight).
-# growth_weighted_adm0 <- 1
-# growth_weighted_adm0 <- casestudies %>% 
-#   group_by(year) %>%
-#   dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-#   as.data.frame()
+AllCities = AllBuildup[AllBuildup$type=="BUA", ]
+savename = paste(country_iso, "growthstats_AllCities", sep="_")
+st_write(AllCities, dsn = file.path(getwd(), 'UrbanGrowth.gpkg'), layer = savename, append=F)
 
 
-# Average growth rate per year, unweighted. (Total increase in built area across the country.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_unw_adm0 <- 1
-growth_unw_adm0 <- casestudies %>% 
+
+
+
+# --- 1. Total country annual speed of growth and proportion of build-up. ---
+
+country_iso = "TCD"
+savename = paste(country_iso, "growthstats_AllCities", sep="_")
+AllCities = st_read(dsn = file.path(getwd(), 'UrbanGrowth.gpkg'), layer = savename)
+AllCities = AllCities %>% st_drop_geometry()
+
+
+TotGroA0 = AllCities %>% 
   group_by(year) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
+  dplyr::summarise(AreaKM = sum(AreaKM, na.rm=T)) %>% # Country's total urban area (km) built in that year
+  as.data.frame() %>%
+  ungroup()
 
-growth_unw_adm0 <- arrange(growth_unw_adm0, year) # Ensure that the years are ordered sequentially.
-growth_unw_adm0$cuArea = 1
-growth_unw_adm0$cuArea = cumsum(growth_unw_adm0$area_km)
-totarea = sum(growth_unw_adm0$area_km) # Quality control: This value should be the same as cuArea for 2015.
+TotGroA0 = arrange(TotGroA0, year) # Ensure that the years are ordered sequentially.
 
-growth_unw_adm0$GRO_unw = 1
-growth_unw_adm0 = growth_unw_adm0 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
+TotGroA0$CuArea = cumsum(TotGroA0$AreaKM) # Total cumulative built area by that year.
+TotArea = sum(TotGroA0$AreaKM) # Quality control: This value should be the same as CuArea for 2015.
 
+TotGroA0 = TotGroA0 %>% 
+  mutate(CuArea5y = rollsumr(AreaKM, k = 5, fill = NA))
 
-# Proportion of the country built in that year, unweighted.
-growth_unw_adm0$prop = 1
-growth_unw_adm0 = growth_unw_adm0 %>% mutate(prop= ((area_km / totarea) * 100))
-sum(growth_unw_adm0$prop) # Quality control: This value should be 100. (100 percent)
+TotGroA0 = TotGroA0 %>% 
+  mutate(Gro = ((AreaKM / (CuArea - AreaKM)))) # Country's speed of growth per year for all urban land 
 
+TotGroA0 = TotGroA0 %>% 
+  mutate(Prop1y = ((AreaKM / TotArea))) # Proportion of all urban area of the country built in that year.
+sum(TotGroA0$Prop1y) # Quality control: This value should be 1. (100 percent)
 
-# growth_unw_adm0 <- merge(growth_weighted_adm0, growth_unw_adm0, by="year")
-write.csv(growth_unw_adm0, file = "BFA_growth_adm0.csv")
+TotGroA0 = TotGroA0 %>% 
+  mutate(Prop5y = ((CuArea5y / TotArea)))
 
+AvgGroA0 = AllCities %>%
+  group_by(year) %>% 
+  dplyr::summarise(AvgGro = mean(PcGro1y, na.rm=T)) %>% # Average urban speed of growth per year, where every city has equal influence in the average.
+  as.data.frame() %>%
+  ungroup()
 
+AvgCuAreaA0 = AllCities %>%
+  group_by(year) %>% 
+  dplyr::summarise(AvgCuArea = mean(CuArea, na.rm=T)) %>% # Average total built area each year, where every city has equal influence in the average.
+  as.data.frame() %>%
+  ungroup()
 
+AvgProp1yA0 = AllCities %>%
+  group_by(year) %>%
+  dplyr::summarise(AvgProp1y = mean(Prop1y, na.rm=T)) %>% # Average proportion of a city area attributable to that year's build-up. Every city has equal influence in the average.
+  as.data.frame() %>%
+  ungroup()
 
-# --- 2. Disaggregated by settlement type: Total country annual growth rate and proportion of build-up. ---
+AvgProp5yA0 = AllCities %>%
+  group_by(year) %>%
+  dplyr::summarise(AvgProp5y = mean(Prop5y, na.rm=T)) %>% # Average proportion of a city area attributable to that year's build-up. Every city has equal influence in the average.
+  as.data.frame() %>%
+  ungroup()
 
-# Average growth rate per year per settlement type, weighted by settlement. (every settlement within its class has an equal weight).
-growth_type_adm0 <- 1
-growth_type_adm0 <- casestudies %>% 
-  group_by(year, typ) %>%
-  dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-  as.data.frame()
-
-# Create unique ID.
-growth_type_adm0$typ_yr <- 'placeholder'
-growth_type_adm0$typ_yr <- paste(growth_type_adm0$typ, growth_type_adm0$year, sep="_")
-
-
-# Average growth rate per year, per settlement type, unweighted. (Total increase in built area across the country for each type.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_type_unw_adm0 <- 1
-growth_type_unw_adm0 <- casestudies %>% 
-  group_by(year, typ) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
-
-growth_type_unw_adm0 <- arrange(growth_type_unw_adm0, year) # Ensure that the years are ordered sequentially.
-growth_type_unw_adm0$cuArea = 1
-growth_type_unw_adm0 = growth_type_unw_adm0 %>%
-  group_by(typ) %>%
-  mutate(cuArea = cumsum(area_km))
-
-growth_type_unw_adm0$GRO_unw = 1
-growth_type_unw_adm0 = growth_type_unw_adm0 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
-totarea_bua = sum(growth_type_unw_adm0$area_km[growth_type_unw_adm0$typ=="bua"]) # Quality control: This value should be the same as cuArea for 2015.
-totarea_ssa = sum(growth_type_unw_adm0$area_km[growth_type_unw_adm0$typ=="ssa"])
-totarea_ha = sum(growth_type_unw_adm0$area_km[growth_type_unw_adm0$typ=="ha"])
-
-growth_type_unw_adm0$GRO_unw = 1
-growth_type_unw_adm0 = growth_type_unw_adm0 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
+TotGroA0 = Reduce(function(x, y) merge(x, y, by="year", all=TRUE), list(TotGroA0, AvgGroA0, AvgCuAreaA0, AvgProp1yA0, AvgProp5yA0))
+savename = paste(country_iso, "growth_adm0.csv", sep="_")
+write.csv(TotGroA0, file = savename)
+rm(AvgGroA0, AvgCuAreaA0, AvgProp1yA0, AvgProp5yA0)
 
 
-# Proportion of each settlement type built in that year, unweighted.
-growth_type_unw_adm0 <- growth_type_unw_adm0 %>%
-                        group_by(typ) %>%
-                        mutate(typ_area_tot = sum(area_km, na.rm = T)) %>%
-                        ungroup() %>%
-                        mutate(prop = area_km/typ_area_tot * 100)
-sum(growth_type_unw_adm0$prop) # Quality control: This value should be 300 (100% x 3)
+# CODEBOOK: TotGroA0
 
-growth_type_unw_adm0 = select(growth_type_unw_adm0, -c(typ_area_tot))
-
-# Create unique ID, then merge with other settlement-disaggregated file.
-growth_type_unw_adm0$typ_yr <- 'placeholder'
-growth_type_unw_adm0$typ_yr <- paste(growth_type_unw_adm0$typ, growth_type_unw_adm0$year, sep="_")
-
-WSFE_type_adm0_stats <- merge(growth_type_adm0, growth_type_unw_adm0, by="typ_yr")
-WSFE_type_adm0_stats = select(WSFE_type_adm0_stats, -c(year.y, typ.y))
-WSFE_type_adm0_stats = rename(WSFE_type_adm0_stats, c("year"="year.x", "typ"="typ.x"))
-
-write.csv(WSFE_type_adm0_stats, file = "BFA_growth_SettlementType_adm0.csv")
+# AreaKM      Country's total urban area (km) built in that year
+# CuArea      Total cumulative built area by that year.
+# CuArea5y    Total cumulative built area in that and the previous 4 years.
+# Gro         Country's speed of growth per year for all urban land 
+# Prop1y      Proportion of all urban area of the country built in that year.
+# Prop5y      Proportion of all urban area of the country built in that and the previous 4 years.
+# AvgGro      Average urban speed of growth per year, where every city has equal influence in the average.
+# AvgProp1y   Average proportion of a city area attributable to that year's build-up. Every city has equal influence in the average.
+# AvgProp5y   Average proportion of a city area attributable to that and the previous 4 years of build-up. Every city has equal influence in the average.
 
 
 
 
 
-# --- 3. By ADM1 region. ---
+# --- 2. Grouped by urban type: Country-wide annual speed of growth and proportion of build-up. ---
 
-# Average growth rate per year per region, weighted by settlement. (every settlement within its region has an equal weight).
-# growth_weighted_adm1 <- 1
-# growth_weighted_adm1 <- casestudies %>% 
-#   group_by(year, admin1Pcod) %>%
-#   dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-#   as.data.frame()
-
-
-# Average growth rate per year, per region, unweighted. (Total increase in built area across the region.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_unw_adm1 <- 1
-growth_unw_adm1 <- casestudies %>% 
-  group_by(year, admin1Pcod) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
-
-growth_unw_adm1 <- arrange(growth_unw_adm1, year) # Ensure that the years are ordered sequentially.
-growth_unw_adm1$cuArea = 1
-growth_unw_adm1$cuArea = cumsum(growth_unw_adm1$area_km)
-totarea = sum(growth_unw_adm1$area_km) # Quality control: This value should be the same as cuArea for 2015.
-
-growth_unw_adm1$GRO_unw = 1
-growth_unw_adm1 = growth_unw_adm1 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
-
-
-# Proportion of the country built in that year, unweighted.
-growth_unw_adm1$prop = 1
-growth_unw_adm1 = growth_unw_adm1 %>% mutate(prop= ((area_km / totarea) * 100))
-sum(growth_unw_adm1$prop) # Quality control: This value should be 100. (100 percent)
-
-
-# Create unique ID, then save to file.
-growth_unw_adm1$adm_yr <- 'placeholder'
-growth_unw_adm1$adm_yr <- paste(growth_unw_adm1$admin1Pcod, growth_unw_adm1$year, sep="_")
-
-# growth_unw_adm1 <- merge(growth_weighted_adm1, growth_unw_adm1, by="year")
-write.csv(growth_unw_adm1, file = "BFA_growth_adm1.csv")
-
-
-
-
-# --- 4. Disaggregated by settlement type: Regional annual growth rate and proportion of build-up. ---
-
-# Average growth rate per year per settlement type, weighted by settlement. (every settlement within its class has an equal weight).
-growth_type_w_adm1 <- 1
-growth_type_w_adm1 <- casestudies %>% 
-  group_by(year, typ, admin1Pcod) %>%
-  dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-  as.data.frame()
-
-# Create unique ID.
-growth_type_w_adm1$adm_typ_yr <- 'placeholder'
-growth_type_w_adm1$adm_typ_yr <- paste(growth_type_w_adm1$admin1Pcod, growth_type_w_adm1$typ, growth_type_w_adm1$year, sep="_")
-
-
-# Average growth rate per year, per settlement type, unweighted. (Total increase in built area across the country for each type.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_type_unw_adm1 <- 1
-growth_type_unw_adm1 <- casestudies %>% 
-  group_by(year, typ, admin1Pcod) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
-
-growth_type_unw_adm1 <- arrange(growth_type_unw_adm1, year) # Ensure that the years are ordered sequentially.
-growth_type_unw_adm1$cuArea = 1
-growth_type_unw_adm1 = growth_type_unw_adm1 %>%
-  group_by(typ, admin1Pcod) %>%
-  mutate(cuArea = cumsum(area_km))
-
-growth_type_unw_adm1$GRO_unw = 1
-growth_type_unw_adm1 = growth_type_unw_adm1 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
-
-
-# Proportion of each settlement type built in that year, unweighted.
-growth_type_unw_adm1 <- growth_type_unw_adm1 %>%
-  group_by(typ, admin1Pcod) %>%
-  mutate(adm_typ_area_tot = sum(area_km, na.rm = T)) %>%
+TotGroTypA0 = AllCities %>% 
+  group_by(year, POPtyp) %>%
+  dplyr::summarise(AreaKM = sum(AreaKM, na.rm=T)) %>% # Urban type's total urban area (km) built in that year
   ungroup() %>%
-  mutate(prop = area_km/adm_typ_area_tot * 100)
-sum(growth_type_unw_adm1$prop[growth_type_unw_adm1$typ=="bua"])
-
-growth_type_unw_adm1 = select(growth_type_unw_adm1, -c(adm_typ_area_tot))
-
-# Create unique ID, then merge with other settlement-disaggregated file.
-growth_type_unw_adm1$adm_typ_yr <- 'placeholder'
-growth_type_unw_adm1$adm_typ_yr <- paste(growth_type_unw_adm1$admin1Pcod, growth_type_unw_adm1$typ, growth_type_unw_adm1$year, sep="_")
-
-WSFE_type_adm1_stats <- merge(growth_type_w_adm1, growth_type_unw_adm1, by="adm_typ_yr")
-WSFE_type_adm1_stats = select(WSFE_type_adm1_stats, -c(year.y, typ.y, admin1Pcod.y))
-WSFE_type_adm1_stats = rename(WSFE_type_adm1_stats, c("year"="year.x", "typ"="typ.x", "admin1Pcod"="admin1Pcod.x"))
-
-write.csv(WSFE_type_adm1_stats, file = "BFA_growth_SettlementType_adm1.csv")
-
-
-
-
-# --- 5. By ADM2 province. ---
-
-# Average growth rate per year per region, weighted by settlement. (every settlement within its region has an equal weight).
-# growth_weighted_adm2 <- 1
-# growth_weighted_adm2 <- casestudies %>% 
-#   group_by(year, admin2Pcod) %>%
-#   dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-#   as.data.frame()
-
-
-# Average growth rate per year, per region, unweighted. (Total increase in built area across the region.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_unw_adm2 <- 1
-growth_unw_adm2 <- casestudies %>% 
-  group_by(year, admin2Pcod) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
   as.data.frame()
 
-growth_unw_adm2 <- arrange(growth_unw_adm2, year) # Ensure that the years are ordered sequentially.
-growth_unw_adm2$cuArea = 1
-growth_unw_adm2$cuArea = cumsum(growth_unw_adm2$area_km)
-totarea = sum(growth_unw_adm2$area_km) # Quality control: This value should be the same as cuArea for 2015.
+TotGroTypA0 = arrange(TotGroTypA0, year) # Ensure that the years are ordered sequentially.
+TotGroTypA0 = TotGroTypA0 %>% 
+  complete(year, POPtyp, fill=list(AreaKM=0)) # The 5 year lagging calculations require complete list of years.
 
-growth_unw_adm2$GRO_unw = 1
-growth_unw_adm2 = growth_unw_adm2 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
+TotGroTypA0 = TotGroTypA0 %>%
+  group_by(POPtyp) %>%
+  mutate(TotArea = sum(AreaKM)) %>% # Total area by 2015 for each urban type.
+  ungroup()
 
+TotGroTypA0 = TotGroTypA0 %>%
+  group_by(POPtyp) %>%
+  mutate(CuArea = cumsum(AreaKM)) %>% # Total cumulative built area by that year for each urban type.
+  ungroup()
 
-# Proportion of the country built in that year, unweighted.
-growth_unw_adm2$prop = 1
-growth_unw_adm2 = growth_unw_adm2 %>% mutate(prop= ((area_km / totarea) * 100))
-sum(growth_unw_adm2$prop) # Quality control: This value should be 100. (100 percent)
+TotGroTypA0 = TotGroTypA0 %>% 
+  group_by(POPtyp) %>% 
+  mutate(CuArea5y = rollsumr(AreaKM, k = 5, fill = NA)) %>%
+  ungroup()
 
+TotGroTypA0 = TotGroTypA0 %>% 
+  mutate(Prop5y = ((CuArea5y / TotArea)))
 
-# Create unique ID, then save to file.
-growth_unw_adm2$adm_yr <- 'placeholder'
-growth_unw_adm2$adm_yr <- paste(growth_unw_adm2$admin2Pcod, growth_unw_adm2$year, sep="_")
+TotGroTypA0 = TotGroTypA0 %>% 
+  group_by(POPtyp) %>%
+  mutate(Gro = ((AreaKM / (CuArea - AreaKM)))) %>% # Country's speed of growth per year for all urban land of each urban type.
+  ungroup()
 
-# growth_unw_adm2 <- merge(growth_weighted_adm2, growth_unw_adm2, by="year")
-write.csv(growth_unw_adm2, file = "BFA_growth_adm2.csv")
-
-
-
-
-# --- 6. Disaggregated by settlement type: Regional annual growth rate and proportion of build-up. ---
-
-# Average growth rate per year per settlement type, weighted by settlement. (every settlement within its class has an equal weight).
-growth_type_w_adm2 <- 1
-growth_type_w_adm2 <- casestudies %>% 
-  group_by(year, typ, admin2Pcod) %>%
-  dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-  as.data.frame()
-
-# Create unique ID.
-growth_type_w_adm2$adm_typ_yr <- 'placeholder'
-growth_type_w_adm2$adm_typ_yr <- paste(growth_type_w_adm2$admin2Pcod, growth_type_w_adm2$typ, growth_type_w_adm2$year, sep="_")
-
-
-# Average growth rate per year, per settlement type, unweighted. (Total increase in built area across the country for each type.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_type_unw_adm2 <- 1
-growth_type_unw_adm2 <- casestudies %>% 
-  group_by(year, typ, admin2Pcod) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
-
-growth_type_unw_adm2 <- arrange(growth_type_unw_adm2, year) # Ensure that the years are ordered sequentially.
-growth_type_unw_adm2$cuArea = 1
-growth_type_unw_adm2 = growth_type_unw_adm2 %>%
-  group_by(typ, admin2Pcod) %>%
-  mutate(cuArea = cumsum(area_km))
-
-growth_type_unw_adm2$GRO_unw = 1
-growth_type_unw_adm2 = growth_type_unw_adm2 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
-
-
-# Proportion of each settlement type built in that year, unweighted.
-growth_type_unw_adm2 <- growth_type_unw_adm2 %>%
-  group_by(typ, admin2Pcod) %>%
-  mutate(adm_typ_area_tot = sum(area_km, na.rm = T)) %>%
+AvgGroTypA0 = AllCities %>% 
+  group_by(year, POPtyp) %>%
+  dplyr::summarise(AvgGro = mean(PcGro1y, na.rm=T)) %>% # Average speed of growth per year per built area type. Every location within its class has an equal weight.
   ungroup() %>%
-  mutate(prop = area_km/adm_typ_area_tot * 100)
-sum(growth_type_unw_adm2$prop[growth_type_unw_adm2$typ=="bua"])
+  as.data.frame() %>%
+  complete(year, POPtyp)
 
-growth_type_unw_adm2 = select(growth_type_unw_adm2, -c(adm_typ_area_tot))
-
-# Create unique ID, then merge with other settlement-disaggregated file.
-growth_type_unw_adm2$adm_typ_yr <- 'placeholder'
-growth_type_unw_adm2$adm_typ_yr <- paste(growth_type_unw_adm2$admin2Pcod, growth_type_unw_adm2$typ, growth_type_unw_adm2$year, sep="_")
-
-WSFE_type_adm2_stats <- merge(growth_type_w_adm2, growth_type_unw_adm2, by="adm_typ_yr")
-WSFE_type_adm2_stats = select(WSFE_type_adm2_stats, -c(year.y, typ.y, admin2Pcod.y))
-WSFE_type_adm2_stats = rename(WSFE_type_adm2_stats, c("year"="year.x", "typ"="typ.x", "admin2Pcod"="admin2Pcod.x"))
-
-write.csv(WSFE_type_adm2_stats, file = "BFA_growth_SettlementType_adm2.csv")
-
-
-
-
-
-
-# --- 7. By ADM3 department. ---
-
-# Average growth rate per year per region, weighted by settlement. (every settlement within its region has an equal weight).
-# growth_weighted_adm3 <- 1
-# growth_weighted_adm3 <- casestudies %>% 
-#   group_by(year, admin3Pcod) %>%
-#   dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-#   as.data.frame()
-
-
-# Average growth rate per year, per region, unweighted. (Total increase in built area across the region.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_unw_adm3 <- 1
-growth_unw_adm3 <- casestudies %>% 
-  group_by(year, admin3Pcod) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
-
-growth_unw_adm3 <- arrange(growth_unw_adm3, year) # Ensure that the years are ordered sequentially.
-growth_unw_adm3$cuArea = 1
-growth_unw_adm3$cuArea = cumsum(growth_unw_adm3$area_km)
-totarea = sum(growth_unw_adm3$area_km) # Quality control: This value should be the same as cuArea for 2015.
-
-growth_unw_adm3$GRO_unw = 1
-growth_unw_adm3 = growth_unw_adm3 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
-
-
-# Proportion of the country built in that year, unweighted.
-growth_unw_adm3$prop = 1
-growth_unw_adm3 = growth_unw_adm3 %>% mutate(prop= ((area_km / totarea) * 100))
-sum(growth_unw_adm3$prop) # Quality control: This value should be 100. (100 percent)
-
-
-# Create unique ID, then save to file.
-growth_unw_adm3$adm_yr <- 'placeholder'
-growth_unw_adm3$adm_yr <- paste(growth_unw_adm3$admin3Pcod, growth_unw_adm3$year, sep="_")
-
-# growth_unw_adm3 <- merge(growth_weighted_adm3, growth_unw_adm3, by="year")
-write.csv(growth_unw_adm3, file = "BFA_growth_adm3.csv")
-
-
-
-
-# --- 8. Disaggregated by settlement type: Regional annual growth rate and proportion of build-up. ---
-
-# Average growth rate per year per settlement type, weighted by settlement. (every settlement within its class has an equal weight).
-growth_type_w_adm3 <- 1
-growth_type_w_adm3 <- casestudies %>% 
-  group_by(year, typ, admin3Pcod) %>%
-  dplyr::summarise(GRO_w = mean(pcGRO_1y, na.rm=T)) %>% 
-  as.data.frame()
-
-# Create unique ID.
-growth_type_w_adm3$adm_typ_yr <- 'placeholder'
-growth_type_w_adm3$adm_typ_yr <- paste(growth_type_w_adm3$admin3Pcod, growth_type_w_adm3$typ, growth_type_w_adm3$year, sep="_")
-
-
-# Average growth rate per year, per settlement type, unweighted. (Total increase in built area across the country for each type.)
-# Also includes a variable for total area (km) built in that year, and total cumulative built area by that year.
-growth_type_unw_adm3 <- 1
-growth_type_unw_adm3 <- casestudies %>% 
-  group_by(year, typ, admin3Pcod) %>%
-  dplyr::summarise(area_km = sum(area_km, na.rm=T)) %>% 
-  as.data.frame()
-
-growth_type_unw_adm3 <- arrange(growth_type_unw_adm3, year) # Ensure that the years are ordered sequentially.
-growth_type_unw_adm3$cuArea = 1
-growth_type_unw_adm3 = growth_type_unw_adm3 %>%
-  group_by(typ, admin3Pcod) %>%
-  mutate(cuArea = cumsum(area_km))
-
-growth_type_unw_adm3$GRO_unw = 1
-growth_type_unw_adm3 = growth_type_unw_adm3 %>% mutate(GRO_unw= ((area_km / (cuArea - area_km)) * 100))
-
-
-# Proportion of each settlement type built in that year, unweighted.
-growth_type_unw_adm3 <- growth_type_unw_adm3 %>%
-  group_by(typ, admin3Pcod) %>%
-  mutate(adm_typ_area_tot = sum(area_km, na.rm = T)) %>%
+AvgCuAreaTypA0 = AllCities %>% 
+  group_by(year, POPtyp) %>%
+  dplyr::summarise(AvgCuArea = mean(CuArea, na.rm=T)) %>% # Average total area each year by built area type. Every location within its class has an equal weight.
   ungroup() %>%
-  mutate(prop = area_km/adm_typ_area_tot * 100)
-sum(growth_type_unw_adm3$prop[growth_type_unw_adm3$typ=="bua"])
+  as.data.frame() %>%
+  complete(year, POPtyp)
 
-growth_type_unw_adm3 = select(growth_type_unw_adm3, -c(adm_typ_area_tot))
+AvgProp1yTypA0 = AllCities %>%
+  group_by(year, POPtyp) %>%
+  dplyr::summarise(AvgProp1y = mean(Prop1y, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, POPtyp)
 
-# Create unique ID, then merge with other settlement-disaggregated file.
-growth_type_unw_adm3$adm_typ_yr <- 'placeholder'
-growth_type_unw_adm3$adm_typ_yr <- paste(growth_type_unw_adm3$admin3Pcod, growth_type_unw_adm3$typ, growth_type_unw_adm3$year, sep="_")
+AvgProp5yTypA0 = AllCities %>%
+  group_by(year, POPtyp) %>%
+  dplyr::summarise(AvgProp5y = mean(Prop5y, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, POPtyp)
 
-WSFE_type_adm3_stats <- merge(growth_type_w_adm3, growth_type_unw_adm3, by="adm_typ_yr")
-WSFE_type_adm3_stats = select(WSFE_type_adm3_stats, -c(year.y, typ.y, admin3Pcod.y))
-WSFE_type_adm3_stats = rename(WSFE_type_adm3_stats, c("year"="year.x", "typ"="typ.x", "admin3Pcod"="admin3Pcod.x"))
+TotGroTypA0$TypYr = paste(TotGroTypA0$POPtyp, TotGroTypA0$year, sep="_") # Create unique ID.
 
-write.csv(WSFE_type_adm3_stats, file = "BFA_growth_SettlementType_adm3.csv")
+AvgGroTypA0$TypYr = paste(AvgGroTypA0$POPtyp, AvgGroTypA0$year, sep="_") 
+AvgGroTypA0 = AvgGroTypA0 %>%
+  select(-c(year, POPtyp)) # To avoid duplicates in merge
+
+AvgCuAreaTypA0$TypYr = paste(AvgCuAreaTypA0$POPtyp, AvgCuAreaTypA0$year, sep="_") 
+AvgCuAreaTypA0 = AvgCuAreaTypA0 %>%
+  select(-c(year, POPtyp)) # To avoid duplicates in merge
+
+AvgProp1yTypA0$TypYr = paste(AvgProp1yTypA0$POPtyp, AvgProp1yTypA0$year, sep="_") 
+AvgProp1yTypA0 = AvgProp1yTypA0 %>%
+  select(-c(year, POPtyp))
+
+AvgProp5yTypA0$TypYr = paste(AvgProp5yTypA0$POPtyp, AvgProp5yTypA0$year, sep="_") 
+AvgProp5yTypA0 = AvgProp5yTypA0 %>%
+  select(-c(year, POPtyp))
+
+TotGroTypA0 = Reduce(function(x, y) merge(x, y, by="TypYr", all=TRUE), list(TotGroTypA0, AvgGroTypA0, AvgCuAreaTypA0, AvgProp1yTypA0, AvgProp5yTypA0))
+savename = paste(country_iso, "growth_UrbanType_adm0.csv", sep="_")
+write.csv(TotGroTypA0, file = savename)
+rm(AvgGroTypA0, AvgCuAreaTypA0, AvgProp1yTypA0, AvgProp5yTypA0)
+
+
+# CODEBOOK: TotGroTypA0
+
+# AreaKM      Country's total urban area (km) built in that year for each urban type.
+# CuArea      Total cumulative built area by that year for that urban type.
+# CuArea5y    Total cumulative built area in that and the previous 5 years for that urban type.
+# Gro         Country's speed of growth per year for all urban land within each urban type.
+# Prop1y      Proportion of all urban area of the country for that urban type built in that year.
+# Prop5y      Proportion of all urban area of the country for that urban type built in that and the previous 4 years.
+# AvgGro      Average urban speed of growth per year for that urban type.
+# AvgProp1y   Average proportion of a city area attributable to that year's build-up for that urban type. 
+# AvgProp5y   Average proportion of a city area attributable to that and the previous 4 years of build-up for that urban type. 
 
 
 
-# --- 9. Assigning WorldPop Top-down constrained population estimates 2020 ---
-pop_adm0 = sum(casestudies$pop, na.rm=T)
 
-pop_adm1 = 1
-pop_adm1 = casestudies %>% 
-  group_by(admin1Pcod) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
+
+# --- 3. By ADM1 region, all cities. ---
+
+TotGroA1 = AllCities %>%
+  group_by(year, ADM1) %>%
+  dplyr::summarise(AreaKM = sum(AreaKM, na.rm=T)) %>%
+  ungroup() %>%
   as.data.frame()
 
-pop_adm2 = 1
-pop_adm2 = casestudies %>% 
-  group_by(admin2Pcod) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
+TotGroA1 = arrange(TotGroA1, year)
+TotGroA1 = TotGroA1 %>%
+  complete(year, ADM1, fill=list(AreaKM=0)) # ADM levels are where missing years per site are more likely to happen.
+
+TotGroA1 = TotGroA1 %>%
+  group_by(ADM1) %>%
+  mutate(CuArea = cumsum(AreaKM)) %>%
+  ungroup()
+
+TotGroA1 = TotGroA1 %>%
+  group_by(ADM1) %>%
+  mutate(TotArea = sum(AreaKM)) %>%
+  ungroup()
+
+TotGroA1 = TotGroA1 %>% 
+  group_by(ADM1) %>% 
+  mutate(CuArea5y = rollsumr(AreaKM, k = 5, fill = NA)) %>%
+  ungroup()
+
+TotGroA1 = TotGroA1 %>%
+  group_by(ADM1) %>%
+  mutate(Gro = ((AreaKM / (CuArea - AreaKM)))) %>%
+  ungroup()
+
+TotGroA1 = TotGroA1 %>% 
+  mutate(Prop5y = ((CuArea5y / TotArea)))
+
+AvgGroA1 = AllCities %>%
+  group_by(year, ADM1) %>%
+  dplyr::summarise(AvgGro = mean(PcGro1y, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, ADM1)
+
+AvgCuAreaA1 = AllCities %>%
+  group_by(year, ADM1) %>%
+  dplyr::summarise(AvgCuArea = mean(CuArea, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, ADM1)
+
+AvgProp1yA1 = AllCities %>%
+  group_by(year, ADM1) %>%
+  dplyr::summarise(AvgProp1y = mean(Prop1y, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, ADM1, fill=list(Prop1y=0))
+
+AvgProp5yA1 = AllCities %>%
+  group_by(year, ADM1) %>%
+  dplyr::summarise(AvgProp5y = mean(Prop5y, na.rm=T)) %>% # Average proportion of a city area attributable to that year's build-up. Every city has equal influence in the average.
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, ADM1, fill=list(Prop5y=0))
+
+TotGroA1$AdmYr = paste(TotGroA1$ADM1, TotGroA1$year, sep="_") # Create unique ID.
+AvgGroA1$AdmYr = paste(AvgGroA1$ADM1, AvgGroA1$year, sep="_") 
+AvgGroA1 = AvgGroA1 %>%
+  select(-c(year, ADM1))
+AvgCuAreaA1$AdmYr = paste(AvgCuAreaA1$ADM1, AvgCuAreaA1$year, sep="_") 
+AvgCuAreaA1 = AvgCuAreaA1 %>%
+  select(-c(year, ADM1))
+AvgProp1yA1$AdmYr = paste(AvgProp1yA1$ADM1, AvgProp1yA1$year, sep="_") 
+AvgProp1yA1 = AvgProp1yA1 %>%
+  select(-c(year, ADM1))
+AvgProp5yA1$AdmYr = paste(AvgProp5yA1$ADM1, AvgProp5yA1$year, sep="_") 
+AvgProp5yA1 = AvgProp5yA1 %>%
+  select(-c(year, ADM1))
+
+TotGroA1 = Reduce(function(x, y) merge(x, y, by="AdmYr", all=TRUE), list(TotGroA1, AvgGroA1, AvgCuAreaA1, AvgProp1yA1, AvgProp5yA1))
+savename = paste(country_iso, "growth_adm1.csv", sep="_")
+write.csv(TotGroA1, file = savename)
+rm(AvgGroA1, AvgCuAreaA1, AvgProp1yA1, AvgProp5yA1)
+
+
+# CODEBOOK: TotGroA1
+
+# AreaKM     Region's total urban area (km) built in that year.
+# CuArea      Total cumulative built area by that year.
+# Gro         Speed of growth per year for all urban land.
+# Prop1y      Proportion of all urban area built in that year.
+# AvgGro      Average urban speed of growth per year.
+# AvgProp1y   Average proportion of a city area attributable to that year's build-up. 
+
+
+
+
+
+# --- 4. By ADM1 region, by urban type. ---
+
+TotGroTypA1 = AllCities %>% 
+  group_by(year, POPtyp, ADM1) %>%
+  dplyr::summarise(AreaKM = sum(AreaKM, na.rm=T)) %>% # Urban type's total urban area (km) built in that year
+  ungroup() %>%
   as.data.frame()
 
-pop_adm3 = 1
-pop_adm3 = casestudies %>% 
-  group_by(admin3Pcod) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
-  as.data.frame()
+TotGroTypA1 = arrange(TotGroTypA1, year) # Ensure that the years are ordered sequentially.
+TotGroTypA1 = TotGroTypA1 %>%
+  complete(year, POPtyp, ADM1, fill=list(AreaKM=0)) # Many missing combos expected at this point.
 
-pop_type_adm0 = 1
-pop_type_adm0 = casestudies %>% 
-  group_by(typ) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>% 
-  as.data.frame()
+TotGroTypA1 = TotGroTypA1 %>%
+  group_by(POPtyp, ADM1) %>%
+  mutate(CuArea = cumsum(AreaKM)) %>% # Total cumulative built area by that year for each urban type.
+  ungroup()
 
-pop_type_adm1 = 1
-pop_type_adm1 = casestudies %>%
-  group_by(typ, admin1Pcod) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>%
-  as.data.frame()
+TotGroTypA1 = TotGroTypA1 %>%
+  group_by(POPtyp, ADM1) %>%
+  mutate(TotArea = sum(AreaKM)) %>% # Total area by 2015 for each urban type.
+  ungroup()
+  
+TotGroTypA1 = TotGroTypA1 %>% 
+  group_by(POPtyp, ADM1) %>%
+  mutate(Gro = ((AreaKM / (CuArea - AreaKM)))) %>% # Speed of growth per year for all urban land of each urban type.
+  ungroup()
 
-pop_type_adm2 = 1
-pop_type_adm2 = casestudies %>%
-  group_by(typ, admin2Pcod) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>%
-  as.data.frame()
+AvgGroTypA1 = AllCities %>% 
+  group_by(year, POPtyp, ADM1) %>%
+  dplyr::summarise(AvgGro = mean(PcGro1y, na.rm=T)) %>% # Average speed of growth per year per built area type. Every location within its class has an equal weight.
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, POPtyp, ADM1)
 
-pop_type_adm3 = 1
-pop_type_adm3 = casestudies %>%
-  group_by(typ, admin3Pcod) %>%
-  dplyr::summarise(wpop_2020 = sum(pop, na.rm=T)) %>%
+AvgCuAreaTypA1 = AllCities %>% 
+  group_by(year, POPtyp, ADM1) %>%
+  dplyr::summarise(AvgCuArea = mean(CuArea, na.rm=T)) %>% # Average speed of growth per year per built area type. Every location within its class has an equal weight.
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, POPtyp, ADM1)
+
+AvgProp1yTypA1 = AllCities %>%
+  group_by(year, POPtyp, ADM1) %>%
+  dplyr::summarise(AvgProp1y = mean(Prop1y, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, POPtyp, ADM1)
+
+AvgProp5yTypA1 = AllCities %>%
+  group_by(year, POPtyp, ADM1) %>%
+  dplyr::summarise(AvgProp5y = mean(Prop5y, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(year, POPtyp, ADM1)
+
+TotGroTypA1$TypAdmYr = paste(TotGroTypA1$POPtyp, TotGroTypA1$ADM1, TotGroTypA1$year, sep="_") # Create unique ID.
+AvgGroTypA1$TypAdmYr = paste(AvgGroTypA1$POPtyp, AvgGroTypA1$ADM1, AvgGroTypA1$year, sep="_") 
+AvgGroTypA1 = AvgGroTypA1 %>%
+  select(-c(year, ADM1, POPtyp))
+AvgCuAreaTypA1$TypAdmYr = paste(AvgCuAreaTypA1$POPtyp, AvgCuAreaTypA1$ADM1, AvgCuAreaTypA1$year, sep="_") 
+AvgCuAreaTypA1 = AvgCuAreaTypA1 %>%
+  select(-c(year, ADM1, POPtyp))
+AvgProp1yTypA1$TypAdmYr = paste(AvgProp1yTypA1$POPtyp, AvgProp1yTypA1$ADM1, AvgProp1yTypA1$year, sep="_") 
+AvgProp1yTypA1 = AvgProp1yTypA1 %>%
+  select(-c(year, ADM1, POPtyp))
+AvgProp5yTypA1$TypAdmYr = paste(AvgProp5yTypA1$POPtyp, AvgProp5yTypA1$ADM1, AvgProp5yTypA1$year, sep="_")
+AvgProp5yTypA1 = AvgProp5yTypA1 %>%
+  select(-c(year, ADM1, POPtyp))
+
+TotGroTypA1 = Reduce(function(x, y) merge(x, y, by="TypAdmYr", all=TRUE), list(TotGroTypA1, AvgGroTypA1, AvgCuAreaTypA1, AvgProp1yTypA1, AvgProp5yTypA1))
+savename = paste(country_iso, "growth_UrbanType_adm1.csv", sep="_")
+write.csv(TotGroTypA1, file = savename)
+rm(AvgGroTypA1, AvgCuAreaTypA1, AvgProp1yTypA1, AvgProp5yTypA1)
+
+
+# CODEBOOK: TotGroTypA1
+
+# AreaKM     Region's total urban area (km) built in that year for each urban type.
+# CuArea      Total cumulative built area by that year for that urban type.
+# Gro         Speed of growth per year for all urban land within each urban type.
+# Prop1y      Proportion of all urban area for that urban type built in that year.
+# AvgGro      Average urban speed of growth per year for that urban type.
+# AvgProp1y   Average proportion of a city area attributable to that year's build-up for that urban type. 
+
+
+
+
+
+# --- 4. Assigning WorldPop Top-down constrained population estimates 2020 ---
+PopCities_adm0 = sum(AllCities$pop2020[AllCities$year==2015])
+
+pop_type_adm0 = AllCities %>% 
+  filter(year==2015) %>%
+  group_by(POPtyp) %>%
+  dplyr::summarise(PopCities = sum(pop2020, na.rm=T)) %>% 
+  ungroup() %>%
   as.data.frame()
+sum(pop_type_adm0$PopCities) # Quality control. Should equal pop20_adm0
+
+pop_adm1 = AllCities %>% 
+  filter(year==2015) %>%
+  group_by(ADM1) %>%
+  dplyr::summarise(PopCities = sum(pop2020, na.rm=T)) %>% 
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(ADM1, fill=list(PopCities=0))
+sum(pop_adm1$PopCities)
+
+pop_type_adm1 = AllCities %>%
+  filter(year==2015) %>%
+  group_by(POPtyp, ADM1) %>%
+  dplyr::summarise(PopCities = sum(pop2020, na.rm=T)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  complete(POPtyp, ADM1, fill=list(PopCities=0))
+sum(pop_type_adm1$PopCities)
+
 
 
 # Join onto aggregate tables and save to file.
-growth_unw_adm0$pop_adm0 = pop_adm0
-growth_unw_adm1 = merge(growth_unw_adm1, pop_adm1, by="admin1Pcod", all.x=T)
-growth_unw_adm2 = merge(growth_unw_adm2, pop_adm2, by="admin2Pcod", all.x=T)
-growth_unw_adm3 = merge(growth_unw_adm3, pop_adm3, by="admin3Pcod", all.x=T)
-WSFE_type_adm0_stats = merge(WSFE_type_adm0_stats, pop_type_adm0, by="typ", all.x=T)
-WSFE_type_adm1_stats = merge(WSFE_type_adm1_stats, pop_type_adm1, by=c("typ", "admin1Pcod"), all.x=T)
-WSFE_type_adm2_stats = merge(WSFE_type_adm2_stats, pop_type_adm2, by=c("typ", "admin2Pcod"), all.x=T)
-WSFE_type_adm3_stats = merge(WSFE_type_adm3_stats, pop_type_adm3, by=c("typ", "admin3Pcod"), all.x=T)
+TotGroA0$PopCities = PopCities_adm0
+TotGroTypA0 = merge(TotGroTypA0, pop_type_adm0, by="POPtyp", all.x=T)
+TotGroA1 = merge(TotGroA1, pop_adm1, by="ADM1", all.x=T)
+TotGroTypA1 = merge(TotGroTypA1, pop_type_adm1, by=c("POPtyp", "ADM1"), all.x=T)
+rm(PopCities_adm0, pop_type_adm0, pop_adm1, pop_type_adm1)
 
-write.csv(growth_unw_adm0, file = "BFA_growth_adm0.csv")
-write.csv(WSFE_type_adm0_stats, file = "BFA_growth_SettlementType_adm0.csv")
-write.csv(growth_unw_adm1, file = "BFA_growth_adm1.csv")
-write.csv(growth_unw_adm2, file = "BFA_growth_adm2.csv")
-write.csv(growth_unw_adm3, file = "BFA_growth_adm3.csv")
-write.csv(WSFE_type_adm1_stats, file = "BFA_growth_SettlementType_adm1.csv")
-write.csv(WSFE_type_adm2_stats, file = "BFA_growth_SettlementType_adm2.csv")
-write.csv(WSFE_type_adm3_stats, file = "BFA_growth_SettlementType_adm3.csv")
+savename = paste(country_iso, "growth_adm0.csv", sep="_")
+write.csv(TotGroA0, file = savename)
+savename = paste(country_iso, "growth_UrbanType_adm0.csv", sep="_")
+write.csv(TotGroTypA0, file = savename)
+savename = paste(country_iso, "growth_adm1.csv", sep="_")
+write.csv(TotGroA1, file = savename)
+savename = paste(country_iso, "growth_UrbanType_adm1.csv", sep="_")
+write.csv(TotGroTypA1, file = savename)
 
-
-
-
-
-# ------------- VISUALIZATION ----------------
-
-# --- Prepare cities dataset ---
-
-# Reload if necessary.
-casestudies <-  st_read('WSFE_growthstats_grid3_v2/WSFE_BFA_growthstats2.shp')
-casestudies <- casestudies %>% st_drop_geometry()
-country_agg <- read.csv('BFA_growth_SettlementType_adm0.csv')
-
-# Add name of case study city as new variable field for easy plotting.
-casestudies$City <- NA
-
-# Case study cities:
-# BFA 
-casestudies <- within(casestudies, City[NEAR_FID == 354] <- 'Ouagadougou')
-casestudies <- within(casestudies, City[NEAR_FID == 332] <- 'Bobo-Dioulasso')
-casestudies <- within(casestudies, City[NEAR_FID == 347] <- 'Koudougou')
-casestudies <- within(casestudies, City[NEAR_FID == 180] <- 'Madiagdune')
-casestudies <- within(casestudies, City[NEAR_FID == 364] <- 'Kongoussi')
-# CAF
-# casestudies <- within(casestudies, City[NEAR_FID == 10028] <- 'Bangui')
-# casestudies <- within(casestudies, City[NEAR_FID == 25878] <- 'Bambari')
-# casestudies <- within(casestudies, City[NEAR_FID == 929] <- 'Berberati')
-# CMN
-# casestudies <- within(casestudies, City[NEAR_FID == 18] <- 'Douala')
-# casestudies <- within(casestudies, City[NEAR_FID == 280] <- 'Yaounde')
-# casestudies <- within(casestudies, City[NEAR_FID == 266] <- 'Bamenda')
-# COG
-# casestudies <- within(casestudies, City[NEAR_FID == 8605 <- 'Brazzaville')
-# casestudies <- within(casestudies, City[NEAR_FID == 439] <- 'Pointe-Noire')
-# casestudies <- within(casestudies, City[NEAR_FID == 14780] <- 'Ouesso')
-# GAB
-# casestudies <- within(casestudies, City[NEAR_FID == 12] <- 'Libreville')
-# casestudies <- within(casestudies, City[NEAR_FID == 18] <- 'Port-Gentil')
-# casestudies <- within(casestudies, City[NEAR_FID == 6] <- 'Franceville')
-
-# XXXXX
-# MLI     Bamako: 97, 98
-# casestudies <- within(casestudies, City[NEAR_FID == 97] <- 'Bamako')
-# casestudies <- within(casestudies, City[NEAR_FID == 313] <- 'Gao')
-# casestudies <- within(casestudies, City[NEAR_FID == 80] <- 'Sikasso')
-# casestudies <- within(casestudies, City[NEAR_FID == 184] <- 'Kayes')
-# XXXXX
-
-# NER
-# casestudies <- within(casestudies, City[NEAR_FID == 370] <- 'Niamey')
-# casestudies <- within(casestudies, City[NEAR_FID == 161] <- 'Maradi')
-# casestudies <- within(casestudies, City[NEAR_FID == 324] <- 'Zinder')
-# casestudies <- within(casestudies, City[NEAR_FID == 341] <- 'Diffa')
-# TCD
-# casestudies <- within(casestudies, City[NEAR_FID == 131507] <- 'NDjamena')
-# casestudies <- within(casestudies, City[NEAR_FID == 278172] <- 'Abeche')
-# casestudies <- within(casestudies, City[NEAR_FID == 333078] <- 'Faya')
-# casestudies <- within(casestudies, City[NEAR_FID == 234510] <- 'Bol')
-
-
-
-# Narrow down to only case studies
-cs_subset <- casestudies %>%
-  filter(!is.na(City))
-
-# Subset of 5 year increments
-cs_5y <- cs_subset %>% 
-  filter_at(vars(year), 
-            any_vars(. %in% c('1985', '1990', '1995', '2000', '2005', '2010', '2015'))) 
-
-# Subset to single city. 
-cs_1 <- casestudies %>%
-  filter(NEAR_FID == 354)
-
-# Narrow down to only Built-Up Areas, and only Settlement Areas.
-country_bua = country_agg %>%
-  filter(type.x=='bua')
-
-
-
-
-# --- Prepare design workspace ---
-
-# Check available fonts
-windowsFonts() # If limited, load desired font from computer's font library with showtext package.
-# install.packages('showtext') 
-library(showtext)
-font_paths()
-font_files()
-font_add(family="Barlow", regular="C:/Users/grace/AppData/Local/Microsoft/Windows/Fonts/Barlow-Black.ttf")
-font_families() # Desired font should now be available.
-
-# Color palettes
-cbPalette <- c("#E69F00", "#999999", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7") # Color blind friendly
-boldcolorPalette <- c("#2a9d8f", "#e76f51", "#e9c46a", "#f4a261", "#264653") # Retro/bold
-
-# Create quick-adds for plotting.
-BOLD <- element_text(face="bold")
-THEME_BARLOW <- theme_light() + theme(text=element_text(family="Barlow"), plot.title = BOLD, legend.title = BOLD) # https://ggplot2.tidyverse.org/reference/theme.html
-CITY_LINE <- geom_line(aes(color=City), alpha = 1, lwd = 1.25) # Create line for each city
-
-# Function for labeling the cumulative area by 2015.
-max_cuArea1y <- function(city_max){
-  points <- data.frame(xpt = rep(NA,length(city_max)),
-                       ypt = rep(NA, length(city_max)))
-  for(i in 1:length(city_max)){
-    points$ypt[i] <- max(cs_subset$cuArea1y[cs_subset$City == city_max[i] & cs_subset$year!=1985],na.rm = T)
-    check <- cs_subset$year[cs_subset$City == city_max[i] & cs_subset$cuArea1y == points$ypt[i]]
-    points$xpt[i] <- max(check, na.rm = T)
-  }
-  list(annotate(geom = "text", x = points$xpt, y=points$ypt+2, label =round(points$ypt, digits=2), 
-                fontface="italic", color="#6c757d", size=3))
-}
-
-# Function for marking the year in which the largest proportion was built
-max_prop1y <- function(city_max){
-  points <- data.frame(xpt = rep(NA,length(city_max)),
-                       ypt = rep(NA, length(city_max)))
-  for(i in 1:length(city_max)){
-    points$ypt[i] <- max(cs_subset$prop1y[cs_subset$City == city_max[i] & cs_subset$year!=1985],na.rm = T)
-    check <- cs_subset$year[cs_subset$City == city_max[i] & cs_subset$prop1y == points$ypt[i]]
-    points$xpt[i] <- max(check, na.rm = T)
-  }
-  list(geom_segment(data = points, aes(x=xpt,y=ypt,xend=xpt+3,yend=ypt), inherit.aes = F, color="#6c757d"),
-       annotate(geom = "text", x = points$xpt+4, y=points$ypt, label =points$xpt, fontface="italic", color="#6c757d"))
-}
-
-
-
-
-# --- Chart: Cumulative area ---
-cuAreaplot = cs_subset %>%
-  ggplot(aes(x = year, y = cuArea1y)) +
-  CITY_LINE +
-  THEME_BARLOW +
-  max_cuArea1y(c("Ouagadougou", "Bobo-Dioulasso", "Koudougou", "Madiagdune", "Kongoussi"))+
-  scale_color_manual(values = cbPalette) + 
-  labs(title = "Comparing cities of Burkina Faso", subtitle ="Cumulative area of the city, 1985-2015", 
-       x = "Year", y = expression(paste("Cumulative area (km"^"2", ")")))
-
-cuAreaplot + geom_line(data=wsfe_adm, aes(color=City), alpha = 1, lwd = 1.25)
-
-
-# --- Chart: Proportion of area ---
-cs_subset %>%
-  filter(year != 1985) %>%
-  ggplot(aes(x = year, y = prop1y)) +
-  CITY_LINE +
-  THEME_BARLOW +
-  max_prop1y(c("Koudougou", "Madiagdune", "Kongoussi"))+
-  scale_color_manual(values = cbPalette) + 
-  labs(title = "Comparing cities of Burkina Faso", subtitle ="Proportion of the total city area built each year, 1986-2015", 
-       x = "Year", y = expression(paste("Proportion of built-up area (%)")))
-
-
-# --- Chart: Proportion of area, 5 year increments ---
-cs_5y %>%
-  filter(year != 1985) %>%
-  ggplot(aes(x = City, y = prop5y, fill = year)) +
-  THEME_BARLOW +
-  geom_bar(stat='identity') +
-  scale_fill_gradient(low="black", high="#EE6C4D") + 
-  labs(title = "Cameroon", subtitle ="Proportion of city built every 5 years, 1986-2015", 
-       x = "", y = expression(paste("Proportion of built-up area (%)")))
-
-
-# --- One city at a time. ---
-# Cumulative area
-cs_1 %>%
-  ggplot(aes(x = year, y = cuArea1y)) +
-  CITY_LINE +
-  geom_area(fill = "#E69F00", alpha = .4) +
-  THEME_BARLOW +
-  scale_color_manual(values = cbPalette) + 
-  labs(title = "Ouagadougou, Burkina Faso", subtitle ="Cumulative area, 1985-2015", 
-       x = "Year", y = expression(paste("Cumulative area (km"^"2", ")")))
-
-# Proportion (1 year)
-cs_1 %>%
-  filter(year != 1985) %>%
-  ggplot(aes(x = year, y = prop1y)) +
-  CITY_LINE +
-  THEME_BARLOW +
-  scale_color_manual(values = cbPalette) + 
-  labs(title = "Ouagadougou, Burkina Faso", subtitle ="Proportion of the total city area built each year, 1986-2015", 
-       x = "Year", y = expression(paste("Proportion of built-up area (%)")))
-
-
-
-# ------------- CODEBOOK ----------------
-
-# --- WSFE_[COUNTRY-ISO]_growthstats.shp ---
-# 
-
-## NEAR_FID       GRID3 settlement ID used to define the extents of the WSF agglomeration.
-## City           Name of settlement, based on common knowledge.
-## year           Year that the reported build-up was first detected.
-## area_m         Total geographic area of build-up detected for that year for that settlement, in meters.
-## area_km        Total geographic area of build-up detected for that year for that settlement, in kilometers.
-## built_ID       Unique ID field. The name is derived from GRID3 settlement ID + year of first detection.
-## totArea        Total geographic area for all years combined for the GRID3 settlement, in kilometers.
-## cuArea1y       Cumulative area of the settlement by that year.
-## prop1y         Areal proportion of the settlement attributable to that year.
-## prop5y         Areal proportion of the settlement attributable to the last five years, inclusive of that year.
-## pcGRO_1y       Percent increase in area from the previous year's cumulative total area.
-
-
-
-# --- [COUNTRY-ISO]_growth_adm0.csv ---
-## year           Year that the reported build-up was first detected.
-## area_km        Total geographic area of build-up detected for that year for all settlements, in kilometers.
-## cuArea         Cumulative area of build-up for all settlements by that year, in kilometers.
-## GRO_unw        Average growth rate per year, unweighted. (Total increase in built area across the country.)
-## GRO_w          Average growth rate per year, weighted by settlement. (every settlement of every type has an equal weight).
-## prop           Average proportion of the country built in that year.
-
-
-# --- [COUNTRY-ISO]_growth_SettlementType_adm0.csv ---
-## All variables the same as [COUNTRY-ISO]_growth_adm0.csv, but disaggregated by settlement type. (Each year has three rows: BUA, SSA, and HA).
-## typ_yr         Unique ID field combining settlement type and year of build-up.
-## typ            Type of settlement as defined by GRID3: Built-up Area (bua), Small Settlement Area (ssa), or Hamlet Area (ha).
-## year           Year that the reported build-up was first detected.
-## area_km        Total geographic area of build-up detected for that year for that settlement type, in kilometers.
-## cuArea         Cumulative area of build-up for that settlement type by that year, in kilometers.
-## GRO_unw        Average growth rate from previous year for that settlement type, no weighting. (Total rate of increase in built area for that settlement type across the country.)
-## GRO_w          Average growth rate from previous year for that settlement type, where every settlement in that type has an equal weight, without consideration for relative size. For example, an SSA with 2km of build-up has as much influence as an SSA with 1km.
-## prop           Average proportion of that settlement type built in that year.
-
-
-# --- [COUNTRY-ISO]_growth_adm1.csv ---
-## All variables the same as [COUNTRY-ISO]_growth_adm0.csv, but for each ADM1 region.
-## adm_typ_yr     Unique ID field combining administrative code, settlement type, and year of build-up.
-
-
-# --- [COUNTRY-ISO]_growth_SettlementType_adm1.csv ---
-## All variables the same as [COUNTRY-ISO]_growth_SettlementType_adm0.csv, but for each ADM1 region.
-## adm_typ_yr     Unique ID field combining administrative code, settlement type, and year of build-up.
 
 
