@@ -5,25 +5,19 @@
 ## PREPARE WORKSPACE ---------------------------------------
 setwd("C:/Users/grace/GIS/povertyequity/urban_growth")
 wd <- getwd()
-library(ursa)
-library(raster)
-library(sp)
-library(rgdal)
-library(sf)
-library(dplyr)
-library(rgeos)
-library(naniar) # replace_with_na()
-library(zoo) # rollsum()
-library(tidyverse) # ggplot2()
-library(tidyr) # complete()
-library(viridis)
-library(ggnewscale) # The ggnewscale::new_scale_colour() command acts as an instruction to ggplot2 to initialise a new colour scale: scale and guide commands that appear above the new_scale_colour() command will be applied to the first colour scale, and commands that appear below are applied to the second colour scale.
-library(svglite) # ggsave()
-library(showtext) # To expand font options.
-library(scales) # To change axes to integer (accuracy=1)
-library(forcats)
-library(stringr)
-library(scales)
+
+Packages = c("ursa", "raster", "sp", "rgdal", "sf", "dplyr", "rgeos", "naniar", # replace_with_na()
+             "tidyverse", # includes ggplot2()
+             "tidyr", # complete()
+             "viridis", # for some ggplot2 color scales
+             "ggnewscale", # The ggnewscale::new_scale_colour() command acts as an instruction to ggplot2 to initialise a new colour scale: scale and guide commands that appear above the new_scale_colour() command will be applied to the first colour scale, and commands that appear below are applied to the second colour scale.
+             "svglite", # ggsave()
+             "showtext", # to expand font options
+             "scales", # to change axes to integer (accuracy = 1)
+             "forcats",
+             "stringr"
+)
+lapply(Packages, library, character.only = TRUE)
 
 
 ## LOAD AND PREP DATA ---------------------------------------
